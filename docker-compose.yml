@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  mlflow_ui:
+    image: ghcr.io/mlflow/mlflow
+    container_name: mlflow_ui
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+    # We use sqlite here to bypass the "Maintenance Mode" error
+    command: mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///app/mlruns/mlflow.db --default-artifact-root /app/mlruns
+
+  fraud_app:
+    build: .
+    container_name: fraud_service
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:///app/mlruns/mlflow.db
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./mlruns:/app/mlruns
+    depends_on:
+      - mlflow_ui
+
