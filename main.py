@@ -1,74 +1,67 @@
-import os
+from fastapi import FastAPI
+from pydantic import BaseModel
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List
+import os
 
 # 1. Initialize FastAPI
 app = FastAPI(title="Fraud Detection API")
 
-# 2. Define the path to models
-MODEL_PATH = "models/fraud_model.pkl"
-SCALER_PATH = "models/scaler.pkl"
-
-# 3. Load the model and scaler
-model = None
-scaler = None
-
-if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-    try:
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
-        print("✅ Model and Scaler loaded successfully!")
-    except Exception as e:
-        print(f"❌ Error loading model files: {e}")
-else:
-    print("⚠️ Error: Model files not found. Ensure 'models/' folder is present.")
-
-# 4. Input structure (30 features total: 1 Time + 28 V-features + 1 Amount)
-class Transaction(BaseModel):
+# 2. Define the input data structure (matches your Swagger UI test)
+class TransactionInput(BaseModel):
     time: float
-    v_features: List[float]
+    v_features: list[float]  # For the V1-V28 features
     amount: float
 
+# 3. Load the Model and Scaler 
+# We use a try-except block to make sure the app doesn't crash if paths are wrong
+try:
+    model_path = os.path.join("models", "fraud_model.pkl")
+    scaler_path = os.path.join("models", "scaler.pkl")
+    
+    model = joblib.load(model_path)
+    scaler = joblib.load(scaler_path)
+    print("✅ Model and Scaler loaded successfully!")
+except Exception as e:
+    print(f"❌ Error loading model/scaler: {e}")
+
+# --- NEW ROOT ROUTE (Fixes the 405 Health Check Error) ---
 @app.get("/")
 def home():
-    return {"message": "Fraud Detection API is active"}
+    return {
+        "message": "Fraud Detection System is Online",
+        "documentation": "/docs",
+        "status": "Healthy",
+        "version": "1.0.0"
+    }
 
+# 4. The Prediction Endpoint
 @app.post("/predict")
-def predict(data: Transaction):
-    if model is None or scaler is None:
-        raise HTTPException(status_code=500, detail="Model not loaded on server.")
+def predict(data: TransactionInput):
+    # Combine features into a single array for the model
+    # Order: [Time, V1...V28, Amount]
+    features = [data.time] + data.v_features + [data.amount]
+    
+    # Reshape for a single prediction
+    features_array = np.array(features).reshape(1, -1)
+    
+    # Scale the data
+    scaled_features = scaler.transform(features_array)
+    
+    # Make Prediction
+    prediction = model.predict(scaled_features)[0]
+    probability = model.predict_proba(scaled_features)[0].tolist()
+    
+    status = "Fraud" if prediction == 1 else "Legitimate"
+    
+    return {
+        "prediction": int(prediction),
+        "status": status,
+        "probability": probability
+    }
 
-    try:
-        # Validate that we have exactly 28 V-features
-        if len(data.v_features) != 28:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Expected 28 V-features, but got {len(data.v_features)}"
-            )
-
-        # Reconstruct the 30-column input: [Time, V1...V28, Amount]
-        input_list = [data.time] + data.v_features + [data.amount]
-        features_array = np.array(input_list).reshape(1, -1)
-
-        # Scale and Predict
-        scaled_features = scaler.transform(features_array)
-        prediction = model.predict(scaled_features)
-        prediction_int = int(prediction[0])
-        
-        # Get probability if available (XGBoost supports this)
-        prob = "N/A"
-        if hasattr(model, "predict_proba"):
-            prob = model.predict_proba(scaled_features).tolist()[0]
-
-        return {
-            "prediction": prediction_int,
-            "status": "Fraud" if prediction_int == 1 else "Legit",
-            "probability": prob
-        }
-
-    except Exception as e:
-        print(f"Prediction Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+if __name__ == "__main__":
+    import uvicorn
+    # Use environment variable for port (Render compatibility)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
